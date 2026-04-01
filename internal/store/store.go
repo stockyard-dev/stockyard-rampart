@@ -1,0 +1,11 @@
+package store
+import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{*sql.DB}
+type Entry struct{ID int64 `json:"id"`;IP string `json:"ip"`;List string `json:"list"`;Reason string `json:"reason"`;ExpiresAt *string `json:"expires_at"`;CreatedAt time.Time `json:"created_at"`}
+func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"rampart.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
+func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY AUTOINCREMENT,ip TEXT NOT NULL,list TEXT NOT NULL CHECK(list IN('allow','deny')),reason TEXT DEFAULT '',expires_at TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,UNIQUE(ip,list))`)}
+func(db *DB)Add(e *Entry)error{_,err:=db.Exec(`INSERT INTO entries(ip,list,reason,expires_at)VALUES(?,?,?,?) ON CONFLICT(ip,list) DO UPDATE SET reason=excluded.reason,expires_at=excluded.expires_at`,e.IP,e.List,e.Reason,e.ExpiresAt);return err}
+func(db *DB)List(listType string)([]Entry,error){q:=`SELECT id,ip,list,reason,expires_at,created_at FROM entries WHERE 1=1`;args:=[]interface{}{};if listType!=""{q+=` AND list=?`;args=append(args,listType)};q+=` ORDER BY created_at DESC`;rows,err:=db.Query(q,args...);if err!=nil{return nil,err};defer rows.Close();var out[]Entry;for rows.Next(){var e Entry;rows.Scan(&e.ID,&e.IP,&e.List,&e.Reason,&e.ExpiresAt,&e.CreatedAt);out=append(out,e)};return out,nil}
+func(db *DB)Lookup(ip string)(map[string]interface{},error){var listType,reason string;err:=db.QueryRow(`SELECT list,reason FROM entries WHERE ip=? ORDER BY CASE list WHEN 'deny' THEN 0 ELSE 1 END LIMIT 1`,ip).Scan(&listType,&reason);if err!=nil{return map[string]interface{}{"ip":ip,"status":"unknown","list":""},nil};return map[string]interface{}{"ip":ip,"status":listType,"list":listType,"reason":reason},nil}
+func(db *DB)Remove(id int64){db.Exec(`DELETE FROM entries WHERE id=?`,id)}
+func(db *DB)Stats()(map[string]interface{},error){var allow,deny int;db.QueryRow(`SELECT COUNT(*) FROM entries WHERE list='allow'`).Scan(&allow);db.QueryRow(`SELECT COUNT(*) FROM entries WHERE list='deny'`).Scan(&deny);return map[string]interface{}{"allow_list":allow,"deny_list":deny},nil}
